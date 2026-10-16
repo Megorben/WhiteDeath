@@ -287,12 +287,12 @@ public class SimServer{
     static float potential(){
         int[] dist = coreDistances();
         float maxDist = size / 2f, total = 0f;
-        for(Building b : Groups.build){
+        for(Building b : buildings()){
             if(!(b instanceof Drill.DrillBuild drill) || drill.dominantItems == 0) continue;
 
             float best = maxDist;
             for(Tile t : drill.tile.getLinkedTiles(new arc.struct.Seq<>())) best = Math.min(best, dist(dist, t));
-            for(Building p : drill.proximity){
+            for(Building p : neighbors(drill)){
                 if(p == core) best = 0;
                 else if(p instanceof Conveyor.ConveyorBuild && p.front() != drill) best = Math.min(best, followChain(p, dist));
             }
@@ -341,6 +341,183 @@ public class SimServer{
             }
         }
         return dist;
+    }
+
+    // ---- scripted expert ----
+    // Decides from the current state only (no plan kept between steps), so it can label any state the
+    // learning agent visits, including its mistakes. That is what DAgger imitation learning needs.
+
+    /** Conveyors needed from a free cell to deliver into the core (0 = unreachable) and the direction to go. */
+    static int[] exitDist;
+    static byte[] exitDir;
+
+    static int expertAction(){
+        Set<Building> connected = connectedConveyors();
+        computeExitField(connected);
+        int copper = core.items.get(Items.copper), cells = size * size;
+        arc.struct.Seq<Tile> footprint = new arc.struct.Seq<>();
+
+        //1. lay the next conveyor for the unconnected drill closest to being connected
+        int bestStart = -1, bestLength = Integer.MAX_VALUE;
+        for(Building b : buildings()){
+            if(!(b instanceof Drill.DrillBuild drill)) continue;
+            boolean done = false;
+            int start = -1, length = Integer.MAX_VALUE;
+            for(Building p : neighbors(drill)){
+                if(p == core || connected.contains(p) && p.front() != drill){
+                    done = true;
+                    break;
+                }
+                if(p instanceof Conveyor.ConveyorBuild && p.front() != drill){
+                    Building end = walkChain(p);
+                    Tile front = end.tile.nearby(end.rotation);
+                    if(isFree(front) && exitDist[index(front)] > 0 && exitDist[index(front)] < length){
+                        start = index(front);
+                        length = exitDist[start];
+                    }
+                }
+            }
+            if(done) continue;
+            drill.tile.getLinkedTiles(footprint);
+            for(Tile t : footprint){
+                for(int r = 0; r < 4; r++){
+                    Tile n = t.nearby(r);
+                    if(isFree(n) && exitDist[index(n)] > 0 && exitDist[index(n)] < length){
+                        start = index(n);
+                        length = exitDist[start];
+                    }
+                }
+            }
+            if(start >= 0 && length < bestLength){
+                bestStart = start;
+                bestLength = length;
+            }
+        }
+        if(bestStart >= 0){
+            int x = bestStart % size, y = bestStart / size, rotation = exitDir[bestStart];
+            return copper >= 1 && canPlace(Blocks.conveyor, x, y, rotation) ? 1 + cells + bestStart * 4 + rotation : 0;
+        }
+
+        //2. every drill is connected: place a new one on the richest ore that is cheap to connect
+        int bestCell = -1, bestScore = Integer.MIN_VALUE;
+        for(int cell = 0; cell < cells; cell++){
+            int x = cell % size, y = cell / size;
+            if(!canPlace(Blocks.mechanicalDrill, x, y, 0)) continue;
+            int ores = 0, length = Integer.MAX_VALUE;
+            for(int dx = 0; dx < 2; dx++){
+                for(int dy = 0; dy < 2; dy++){
+                    Block ore = world.tile(x + dx, y + dy).overlay();
+                    if(ore == Blocks.oreCopper || ore == Blocks.oreLead) ores++;
+                }
+            }
+            if(ores < 2) continue;
+            for(int dx = -1; dx <= 2; dx++){
+                for(int dy = -1; dy <= 2; dy++){
+                    boolean inside = dx >= 0 && dx < 2 && dy >= 0 && dy < 2, corner = (dx == -1 || dx == 2) && (dy == -1 || dy == 2);
+                    if(inside || corner) continue;
+                    Tile n = world.tile(x + dx, y + dy);
+                    if(n == null) continue;
+                    if(n.build == core || connected.contains(n.build) && !facesFootprint(n.build, x, y)) length = 0;
+                    else if(isFree(n) && exitDist[index(n)] > 0) length = Math.min(length, exitDist[index(n)]);
+                }
+            }
+            if(length == Integer.MAX_VALUE || copper < Blocks.mechanicalDrill.requirements[0].amount + length) continue;
+            int score = ores * 10 - length;
+            if(score > bestScore){
+                bestScore = score;
+                bestCell = cell;
+            }
+        }
+        return bestCell >= 0 ? 1 + bestCell : 0;
+    }
+
+    static boolean facesFootprint(Building conveyor, int x, int y){
+        Tile f = conveyor.tile.nearby(conveyor.rotation);
+        return f != null && f.x >= x && f.x <= x + 1 && f.y >= y && f.y <= y + 1;
+    }
+
+    /** Free cells: BFS outward from the cells that can deliver straight into the core or a connected conveyor. */
+    static void computeExitField(Set<Building> connected){
+        exitDist = new int[size * size];
+        exitDir = new byte[size * size];
+        ArrayDeque<Tile> queue = new ArrayDeque<>();
+        for(int i = 0; i < size * size; i++){
+            Tile t = world.tile(i % size, i / size);
+            if(!isFree(t)) continue;
+            for(int r = 0; r < 4; r++){
+                Tile n = t.nearby(r);
+                if(n == null || n.build == null) continue;
+                boolean intoConveyor = connected.contains(n.build) && n.build.tile.nearby(n.build.rotation) != t;
+                if(n.build == core || intoConveyor){
+                    exitDist[i] = 1;
+                    exitDir[i] = (byte)r;
+                    queue.add(t);
+                    break;
+                }
+            }
+        }
+        while(!queue.isEmpty()){
+            Tile t = queue.poll();
+            for(int r = 0; r < 4; r++){
+                Tile n = t.nearby(r);
+                if(!isFree(n) || exitDist[index(n)] > 0) continue;
+                exitDist[index(n)] = exitDist[index(t)] + 1;
+                exitDir[index(n)] = (byte)((r + 2) % 4);
+                queue.add(n);
+            }
+        }
+    }
+
+    static Set<Building> connectedConveyors(){
+        Set<Building> result = new HashSet<>();
+        for(Building b : buildings()){
+            if(b instanceof Conveyor.ConveyorBuild && walkChain(b) == core) result.add(b);
+        }
+        return result;
+    }
+
+    /** Follows a conveyor chain; returns the core if items arrive there, otherwise the last conveyor. */
+    static Building walkChain(Building start){
+        Set<Building> visited = new HashSet<>();
+        Building cur = start;
+        while(visited.add(cur)){
+            Building next = cur.front();
+            if(next == core) return core;
+            if(!(next instanceof Conveyor.ConveyorBuild) || next.front() == cur) return cur;
+            cur = next;
+        }
+        return cur;
+    }
+
+    /**
+     * All buildings, read from the tiles. Groups.build and Building.proximity are not reliable here:
+     * with the game loop driven by hand, Groups.build misses freshly placed buildings and proximity lags a step.
+     */
+    static arc.struct.Seq<Building> buildings(){
+        arc.struct.Seq<Building> result = new arc.struct.Seq<>();
+        for(Tile t : world.tiles){
+            if(t.build != null && t.isCenter()) result.add(t.build);
+        }
+        return result;
+    }
+
+    static Set<Building> neighbors(Building b){
+        Set<Building> result = new LinkedHashSet<>();
+        for(Tile t : b.tile.getLinkedTiles(new arc.struct.Seq<>())){
+            for(int r = 0; r < 4; r++){
+                Tile n = t.nearby(r);
+                if(n != null && n.build != null && n.build != b) result.add(n.build);
+            }
+        }
+        return result;
+    }
+
+    static boolean isFree(Tile t){
+        return t != null && t.build == null && t.block() == Blocks.air && !t.floor().isDeep();
+    }
+
+    static int index(Tile t){
+        return t.y * size + t.x;
     }
 
     // ---- observation ----
@@ -401,7 +578,8 @@ public class SimServer{
             ",\"size\":" + size +
             ",\"channels\":" + channels +
             ",\"max_steps\":" + maxSteps +
-            ",\"potential\":" + lastPotential + "}";
+            ",\"potential\":" + lastPotential +
+            ",\"expert\":" + expertAction() + "}";
         out.println(json);
         out.flush();
     }

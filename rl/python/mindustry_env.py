@@ -120,7 +120,7 @@ class MindustryMiningEnv(gym.Env):
 
     @staticmethod
     def _info(data):
-        return {k: data[k] for k in ("copper", "lead", "income", "total_income", "step")}
+        return {k: data[k] for k in ("copper", "lead", "income", "total_income", "step", "expert")}
 
     def render(self):
         g = self.grid()
