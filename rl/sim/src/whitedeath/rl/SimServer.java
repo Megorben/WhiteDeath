@@ -47,21 +47,26 @@ public class SimServer{
     channels = 10;
 
     static int size = 24, ticksPerStep = 60, maxSteps = 150, startCopper = 120;
+    /** Weight of the potential-based shaping reward (0 = off) and the discount it is computed with. */
+    static float shaping = 0f, gamma = 0.99f;
 
     static PrintStream out;
     static Rand rand = new Rand();
     static Building core;
     static int stepIndex;
     static long totalIncome;
+    static float lastPotential;
 
     public static void main(String[] args) throws Exception{
         for(int i = 0; i + 1 < args.length; i += 2){
-            int value = Integer.parseInt(args[i + 1]);
+            String value = args[i + 1];
             switch(args[i]){
-                case "--size" -> size = value;
-                case "--ticks" -> ticksPerStep = value;
-                case "--steps" -> maxSteps = value;
-                case "--copper" -> startCopper = value;
+                case "--size" -> size = Integer.parseInt(value);
+                case "--ticks" -> ticksPerStep = Integer.parseInt(value);
+                case "--steps" -> maxSteps = Integer.parseInt(value);
+                case "--copper" -> startCopper = Integer.parseInt(value);
+                case "--shaping" -> shaping = Float.parseFloat(value);
+                case "--gamma" -> gamma = Float.parseFloat(value);
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
@@ -156,6 +161,7 @@ public class SimServer{
 
         stepIndex = 0;
         totalIncome = 0;
+        lastPotential = potential();
         respond(0f, 0, false);
     }
 
@@ -245,6 +251,9 @@ public class SimServer{
         stepIndex++;
 
         float reward = income * 0.1f;
+        float potential = potential();
+        reward += shaping * (gamma * potential - lastPotential);
+        lastPotential = potential;
         respond(reward, income, stepIndex >= maxSteps || !core.isValid());
         if(action > 0 && !placed) Log.warn("Invalid action @ was ignored", action);
     }
@@ -264,6 +273,74 @@ public class SimServer{
 
     static int coreItems(){
         return core.items.get(Items.copper) + core.items.get(Items.lead);
+    }
+
+    // ---- reward shaping ----
+
+    /**
+     * Potential of the current base: for every drill, how close its ore gets to the core
+     * (following the conveyor chain it feeds), weighted by how much ore it covers.
+     * A drill whose chain reaches the core scores its full weight; an unconnected one at most half,
+     * growing as its chain gets closer. Rewarding the change of this potential (gamma * new - old)
+     * guides the agent without changing which strategy is optimal.
+     */
+    static float potential(){
+        int[] dist = coreDistances();
+        float maxDist = size / 2f, total = 0f;
+        for(Building b : Groups.build){
+            if(!(b instanceof Drill.DrillBuild drill) || drill.dominantItems == 0) continue;
+
+            float best = maxDist;
+            for(Tile t : drill.tile.getLinkedTiles(new arc.struct.Seq<>())) best = Math.min(best, dist(dist, t));
+            for(Building p : drill.proximity){
+                if(p == core) best = 0;
+                else if(p instanceof Conveyor.ConveyorBuild && p.front() != drill) best = Math.min(best, followChain(p, dist));
+            }
+            float progress = best == 0 ? 1f : 0.5f * (1f - Math.min(best, maxDist) / maxDist);
+            total += drill.dominantItems / 4f * progress;
+        }
+        return total;
+    }
+
+    /** Closest distance to the core that items on this conveyor chain reach; 0 if they arrive. */
+    static float followChain(Building start, int[] dist){
+        float best = Float.MAX_VALUE;
+        Set<Building> visited = new HashSet<>();
+        Building cur = start;
+        while(cur instanceof Conveyor.ConveyorBuild && visited.add(cur)){
+            best = Math.min(best, dist(dist, cur.tile));
+            Building next = cur.front();
+            if(next == core) return 0;
+            if(next == null || next.front() == cur) break;
+            cur = next;
+        }
+        return best;
+    }
+
+    static float dist(int[] dist, Tile t){
+        int d = dist[t.y * size + t.x];
+        return d < 0 ? Float.MAX_VALUE : d;
+    }
+
+    /** Walking distance from every cell to the core, ignoring buildings; -1 if unreachable. */
+    static int[] coreDistances(){
+        int[] dist = new int[size * size];
+        Arrays.fill(dist, -1);
+        ArrayDeque<Tile> queue = new ArrayDeque<>();
+        for(Tile t : core.tile.getLinkedTiles(new arc.struct.Seq<>())){
+            dist[t.y * size + t.x] = 0;
+            queue.add(t);
+        }
+        while(!queue.isEmpty()){
+            Tile t = queue.poll();
+            for(int r = 0; r < 4; r++){
+                Tile n = t.nearby(r);
+                if(n == null || n.block().isStatic() || dist[n.y * size + n.x] >= 0) continue;
+                dist[n.y * size + n.x] = dist[t.y * size + t.x] + 1;
+                queue.add(n);
+            }
+        }
+        return dist;
     }
 
     // ---- observation ----
@@ -323,7 +400,8 @@ public class SimServer{
             ",\"step\":" + stepIndex +
             ",\"size\":" + size +
             ",\"channels\":" + channels +
-            ",\"max_steps\":" + maxSteps + "}";
+            ",\"max_steps\":" + maxSteps +
+            ",\"potential\":" + lastPotential + "}";
         out.println(json);
         out.flush();
     }

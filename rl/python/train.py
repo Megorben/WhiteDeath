@@ -16,9 +16,12 @@ from mindustry_env import MindustryMiningEnv
 from policy import MapPolicy
 
 
-def make_env(rank, log_dir):
+GAMMA = 0.99
+
+
+def make_env(rank, log_dir, shaping):
     def init():
-        env = MindustryMiningEnv(log_path=os.path.join(log_dir, f"sim-{rank}.log"))
+        env = MindustryMiningEnv(shaping=shaping, gamma=GAMMA, log_path=os.path.join(log_dir, f"sim-{rank}.log"))
         return Monitor(env, info_keywords=("total_income",))
     return init
 
@@ -50,10 +53,11 @@ def main():
     p.add_argument("--out", default="runs/mining")
     p.add_argument("--resume", help="path to a saved model .zip")
     p.add_argument("--device", default="auto")
+    p.add_argument("--shaping", type=float, default=1.0, help="weight of the connection shaping reward, 0 = off")
     args = p.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    env = SubprocVecEnv([make_env(i, args.out) for i in range(args.envs)])
+    env = SubprocVecEnv([make_env(i, args.out, args.shaping) for i in range(args.envs)])
 
     if args.resume:
         model = MaskablePPO.load(args.resume, env=env, device=args.device)
@@ -61,7 +65,7 @@ def main():
         model = MaskablePPO(
             MapPolicy, env,
             n_steps=512, batch_size=256, n_epochs=3,
-            learning_rate=3e-4, gamma=0.99, gae_lambda=0.95,
+            learning_rate=3e-4, gamma=GAMMA, gae_lambda=0.95,
             ent_coef=0.01, clip_range=0.2,
             tensorboard_log=args.out, device=args.device, verbose=0,
         )

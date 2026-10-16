@@ -24,14 +24,18 @@ class MindustryMiningEnv(gym.Env):
     Actions (Discrete): 0 = do nothing, 1 + cell = drill at cell, 1 + S*S + cell*4 + rot = conveyor.
     Cell index is y * size + x; rotation 0 = right, 1 = up, 2 = left, 3 = down.
     Use action_masks() (sb3-contrib MaskablePPO) to only pick valid, affordable placements.
+
+    Reward: 0.1 per copper/lead delivered to the core. With shaping > 0, plus shaping * (gamma * P' - P),
+    where P is a potential that grows as drills get connected to the core (see SimServer.potential).
     """
 
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, size=24, ticks_per_step=60, max_steps=150, start_copper=120,
+    def __init__(self, size=24, ticks_per_step=60, max_steps=150, start_copper=120, shaping=0.0, gamma=0.99,
                  java="java", log_path=None, render_mode=None):
         self.size = size
-        self.args = ["--size", size, "--ticks", ticks_per_step, "--steps", max_steps, "--copper", start_copper]
+        self.args = ["--size", size, "--ticks", ticks_per_step, "--steps", max_steps, "--copper", start_copper,
+                     "--shaping", shaping, "--gamma", gamma]
         self.java = java
         self.log_path = log_path
         self.render_mode = render_mode
