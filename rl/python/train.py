@@ -20,9 +20,9 @@ from policy import MapPolicy
 GAMMA = 0.99
 
 
-def ppo_kwargs(learning_rate=3e-4, ent_coef=0.01):
+def ppo_kwargs(learning_rate=3e-4, ent_coef=0.01, target_kl=None):
     return dict(n_steps=512, batch_size=256, n_epochs=3, learning_rate=learning_rate, gamma=GAMMA,
-                gae_lambda=0.95, ent_coef=ent_coef, clip_range=0.2)
+                gae_lambda=0.95, ent_coef=ent_coef, clip_range=0.2, target_kl=target_kl)
 
 
 def make_env(rank, log_dir, shaping):
@@ -59,8 +59,9 @@ def main():
     p.add_argument("--out", default="runs/mining")
     p.add_argument("--resume", help="continue training a saved model .zip with its own settings")
     p.add_argument("--init", help="start from the weights of a saved model, e.g. the behavior cloning one")
-    p.add_argument("--lr", type=float, help="learning rate (default 3e-4, or 1e-4 with --init)")
+    p.add_argument("--lr", type=float, help="learning rate (default 3e-4, or 3e-5 with --init)")
     p.add_argument("--ent-coef", type=float, help="entropy bonus (default 0.01, or 0.001 with --init)")
+    p.add_argument("--target-kl", type=float, help="stop an update early past this KL (default none, or 0.01 with --init)")
     p.add_argument("--device", default="auto")
     p.add_argument("--shaping", type=float, default=1.0, help="weight of the connection shaping reward, 0 = off")
     args = p.parse_args()
@@ -71,11 +72,14 @@ def main():
     if args.resume:
         model = MaskablePPO.load(args.resume, env=env, device=args.device)
     else:
-        # fine-tuning a pretrained policy needs smaller steps and less exploration, or PPO wrecks it early on
-        lr = args.lr or (1e-4 if args.init else 3e-4)
+        # Fine-tuning a pretrained policy needs small, KL-limited steps and little exploration.
+        # With lr 1e-4 and no KL limit, updates moved the policy by KL 0.02-0.04 and the DAgger agent
+        # degraded from ~230 to ~170 items per episode within 40k steps.
+        lr = args.lr or (3e-5 if args.init else 3e-4)
         ent_coef = args.ent_coef if args.ent_coef is not None else (0.001 if args.init else 0.01)
+        target_kl = args.target_kl if args.target_kl is not None else (0.01 if args.init else None)
         model = MaskablePPO(MapPolicy, env, tensorboard_log=args.out, device=args.device, verbose=0,
-                            **ppo_kwargs(lr, ent_coef))
+                            **ppo_kwargs(lr, ent_coef, target_kl))
         if args.init:
             model.policy.load_state_dict(MaskablePPO.load(args.init, device=args.device).policy.state_dict())
 
