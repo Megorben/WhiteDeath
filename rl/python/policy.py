@@ -2,7 +2,7 @@
 
 Instead of squeezing the map into a vector and predicting 2881 actions with a dense layer,
 the network predicts one logit per cell per building type ("drill here", "conveyor here facing up", ...).
-Dilated residual convolutions give every cell a view of the whole 24x24 map, so it can find the core.
+Dilated residual convolutions at half resolution give every cell a view of the whole map, so it can find the core.
 """
 import torch
 from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
@@ -23,21 +23,31 @@ class ResBlock(nn.Module):
 
 
 class MapEncoder(BaseFeaturesExtractor):
-    """Outputs [action logits (1 + 5*S*S) | value features] in one flat vector."""
+    """Outputs [action logits (1 + 5*S*S) | value features] in one flat vector.
 
-    def __init__(self, observation_space, width=64, dilations=(1, 2, 4, 8, 1)):
+    U-Net-like: the global reasoning (where is the core, where is the ore) runs at half resolution,
+    where it is 4x cheaper, and a light full-resolution layer picks the exact cell.
+    """
+
+    def __init__(self, observation_space, width=32, dilations=(1, 2, 4)):
         c, h, w = observation_space.shape
         self.cells = h * w
         super().__init__(observation_space, features_dim=1 + 5 * self.cells + VALUE_FEATURES)
+        wide = width * 2
         self.stem = nn.Sequential(nn.Conv2d(c, width, 3, padding=1), nn.ReLU())
-        self.body = nn.Sequential(*[ResBlock(width, d) for d in dilations])
+        self.down = nn.Sequential(nn.Conv2d(width, wide, 3, stride=2, padding=1), nn.ReLU())
+        self.body = nn.Sequential(*[ResBlock(wide, d) for d in dilations])
+        self.up = nn.Upsample(size=(h, w), mode="nearest")
+        self.merge = nn.Sequential(nn.Conv2d(width + wide, width, 3, padding=1), nn.ReLU())
         self.cell_head = nn.Conv2d(width, 5, 1)  # drill, conveyor right/up/left/down
-        self.noop_head = nn.Linear(2 * width, 1)
-        self.value_head = nn.Sequential(nn.Linear(2 * width, VALUE_FEATURES), nn.ReLU())
+        self.noop_head = nn.Linear(2 * wide, 1)
+        self.value_head = nn.Sequential(nn.Linear(2 * wide, VALUE_FEATURES), nn.ReLU())
 
     def forward(self, obs):
-        x = self.body(self.stem(obs))
-        pooled = torch.cat([x.mean((2, 3)), x.amax((2, 3))], 1)
+        fine = self.stem(obs)
+        coarse = self.body(self.down(fine))
+        x = self.merge(torch.cat([fine, self.up(coarse)], 1))
+        pooled = torch.cat([coarse.mean((2, 3)), coarse.amax((2, 3))], 1)
         cell = self.cell_head(x)  # (B, 5, H, W)
         drill = cell[:, 0].flatten(1)  # index y * W + x, matches the env layout
         conveyor = cell[:, 1:].permute(0, 2, 3, 1).flatten(1)  # index (y * W + x) * 4 + rotation

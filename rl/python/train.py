@@ -60,7 +60,7 @@ def main():
     else:
         model = MaskablePPO(
             MapPolicy, env,
-            n_steps=512, batch_size=256, n_epochs=4,
+            n_steps=512, batch_size=256, n_epochs=3,
             learning_rate=3e-4, gamma=0.99, gae_lambda=0.95,
             ent_coef=0.01, clip_range=0.2,
             tensorboard_log=args.out, device=args.device, verbose=0,
