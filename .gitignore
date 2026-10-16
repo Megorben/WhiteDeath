@@ -4,3 +4,4 @@ rl/python/runs/
 __pycache__/
 *.pyc
 .venv/
+*.log
