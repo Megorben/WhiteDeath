@@ -8,6 +8,9 @@ import argparse
 import os
 import time
 
+import numpy as np
+import torch
+
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
@@ -52,6 +55,64 @@ class ProgressCallback(BaseCallback):
         return True
 
 
+class ExpertImitation(BaseCallback):
+    """Keeps imitating the scripted expert during RL (DAPG / kickstarting style).
+
+    After every PPO update, one pass of imitation loss on the expert's actions for the states the agent
+    just visited. Plain PPO fine-tuning slowly forgot the DAgger policy (~230 -> ~175 items per episode
+    in 80k steps, even KL-limited); the imitation term holds the expert's level while the RL term looks
+    for improvements on top of it.
+    """
+
+    def __init__(self, coef, batch_size=256):
+        super().__init__()
+        self.coef = coef
+        self.batch_size = batch_size
+        self.labels, self.data = [], None
+
+    def _on_training_start(self):
+        # expert action for each env's current observation
+        self.current = [info["expert"] for info in self.training_env.reset_infos]
+
+    def _on_rollout_start(self):
+        if self.data is not None:
+            self._imitate()  # runs right after the previous PPO update
+        self.labels = []
+
+    def _on_step(self):
+        # the buffer stored the observation from before this step, which self.current describes;
+        # the infos already describe the next observation (or the reset one after an episode ends)
+        self.labels.append(list(self.current))
+        for i, info in enumerate(self.locals["infos"]):
+            done = self.locals["dones"][i]
+            self.current[i] = self.training_env.reset_infos[i]["expert"] if done else info["expert"]
+        return True
+
+    def _on_rollout_end(self):
+        buf = self.model.rollout_buffer
+        self.data = (buf.observations.reshape(-1, *buf.obs_shape),
+                     buf.action_masks.reshape(-1, buf.action_masks.shape[-1]),
+                     np.array(self.labels).reshape(-1))
+
+    def _imitate(self):
+        obs, masks, labels = self.data
+        policy = self.model.policy
+        order = np.random.permutation(len(labels))
+        total = 0.0
+        for i in range(0, len(labels), self.batch_size):
+            idx = order[i:i + self.batch_size]
+            o = torch.as_tensor(obs[idx], device=policy.device)
+            a = torch.as_tensor(labels[idx], device=policy.device)
+            _, log_prob, _ = policy.evaluate_actions(o, a, action_masks=masks[idx])
+            loss = -self.coef * log_prob.mean()
+            policy.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
+            policy.optimizer.step()
+            total += loss.item() * len(idx)
+        self.logger.record("imitation/loss", total / len(labels))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--timesteps", type=int, default=2_000_000)
@@ -62,6 +123,8 @@ def main():
     p.add_argument("--lr", type=float, help="learning rate (default 3e-4, or 3e-5 with --init)")
     p.add_argument("--ent-coef", type=float, help="entropy bonus (default 0.01, or 0.001 with --init)")
     p.add_argument("--target-kl", type=float, help="stop an update early past this KL (default none, or 0.01 with --init)")
+    p.add_argument("--imitation-coef", type=float,
+                   help="weight of the expert imitation loss during RL (default 0, or 1.0 with --init)")
     p.add_argument("--device", default="auto")
     p.add_argument("--shaping", type=float, default=1.0, help="weight of the connection shaping reward, 0 = off")
     args = p.parse_args()
@@ -84,6 +147,9 @@ def main():
             model.policy.load_state_dict(MaskablePPO.load(args.init, device=args.device).policy.state_dict())
 
     callbacks = [ProgressCallback(), CheckpointCallback(100_000 // args.envs, os.path.join(args.out, "checkpoints"), "mining")]
+    imitation = args.imitation_coef if args.imitation_coef is not None else (1.0 if args.init else 0.0)
+    if imitation > 0:
+        callbacks.append(ExpertImitation(imitation))
     try:
         model.learn(args.timesteps, callback=callbacks, reset_num_timesteps=not args.resume)
     finally:
