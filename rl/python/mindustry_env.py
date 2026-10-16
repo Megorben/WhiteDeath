@@ -14,7 +14,9 @@ SERVER_JAR = os.path.join(SIM_DIR, "lib", "server-v146.jar")
 # Must match SimServer.java
 CH_ORE_COPPER, CH_ORE_LEAD, CH_WALL, CH_CORE, CH_DRILL, CH_CONVEYOR, CH_HAS_ITEMS = 0, 1, 2, 3, 4, 5, 9
 SIM_CHANNELS = 10
-EXTRA_CHANNELS = 3  # copper, lead, episode progress as constant planes
+# copper, lead, episode progress as constant planes, then "drill allowed here" and "conveyor allowed here".
+# The policy relies on the two mask planes being last.
+EXTRA_CHANNELS = 5
 NOOP = 0
 
 
@@ -82,7 +84,11 @@ class MindustryMiningEnv(gym.Env):
         return self._obs(data), float(data["reward"]), False, bool(data["done"]), self._info(data)
 
     def action_masks(self):
-        return np.frombuffer(base64.b64decode(self._last["mask"]), dtype=np.uint8).astype(bool)
+        return self._mask(self._last).astype(bool)
+
+    @staticmethod
+    def _mask(data):
+        return np.frombuffer(base64.b64decode(data["mask"]), dtype=np.uint8)
 
     def close(self):
         if self._proc is not None and self._proc.poll() is None:
@@ -107,6 +113,9 @@ class MindustryMiningEnv(gym.Env):
         extra[0] = min(data["copper"] / 500.0, 1.0)
         extra[1] = min(data["lead"] / 500.0, 1.0)
         extra[2] = data["step"] / data["max_steps"]
+        mask = self._mask(data)
+        extra[3] = mask[1:1 + s * s].reshape(s, s)
+        extra[4] = mask[1 + s * s::4].reshape(s, s)  # rotation 0 of each cell; validity does not depend on rotation
         return np.concatenate([self.grid().astype(np.float32), extra])
 
     @staticmethod

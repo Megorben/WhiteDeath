@@ -2,6 +2,11 @@
 
 Instead of squeezing the map into a vector and predicting 2881 actions with a dense layer,
 the network predicts one logit per cell per building type ("drill here", "conveyor here facing up", ...).
+
+The policy is hierarchical: p(action) = p(type) * p(cell | type), with type in {wait, drill, conveyor} and
+p(cell | type) normalized over valid cells only (the last two observation planes are the validity masks).
+Otherwise ~1750 of ~1800 valid actions are conveyors, and an untrained agent burns all its copper on
+random conveyors before it ever places a drill.
 Dilated residual convolutions at half resolution give every cell a view of the whole map, so it can find the core.
 """
 import torch
@@ -40,7 +45,7 @@ class MapEncoder(BaseFeaturesExtractor):
         self.up = nn.Upsample(size=(h, w), mode="nearest")
         self.merge = nn.Sequential(nn.Conv2d(width + wide, width, 3, padding=1), nn.ReLU())
         self.cell_head = nn.Conv2d(width, 5, 1)  # drill, conveyor right/up/left/down
-        self.noop_head = nn.Linear(2 * wide, 1)
+        self.type_head = nn.Linear(2 * wide, 3)  # wait, drill, conveyor
         self.value_head = nn.Sequential(nn.Linear(2 * wide, VALUE_FEATURES), nn.ReLU())
 
     def forward(self, obs):
@@ -51,7 +56,14 @@ class MapEncoder(BaseFeaturesExtractor):
         cell = self.cell_head(x)  # (B, 5, H, W)
         drill = cell[:, 0].flatten(1)  # index y * W + x, matches the env layout
         conveyor = cell[:, 1:].permute(0, 2, 3, 1).flatten(1)  # index (y * W + x) * 4 + rotation
-        return torch.cat([self.noop_head(pooled), drill, conveyor, self.value_head(pooled)], 1)
+
+        drill_ok = obs[:, -2].flatten(1) > 0.5
+        conveyor_ok = (obs[:, -1].flatten(1) > 0.5).repeat_interleave(4, dim=1)
+        drill = torch.log_softmax(drill.masked_fill(~drill_ok, -1e8), 1)
+        conveyor = torch.log_softmax(conveyor.masked_fill(~conveyor_ok, -1e8), 1)
+        kind = torch.log_softmax(self.type_head(pooled), 1)
+        logits = torch.cat([kind[:, :1], kind[:, 1:2] + drill, kind[:, 2:] + conveyor], 1)
+        return torch.cat([logits, self.value_head(pooled)], 1)
 
 
 class SplitHead(nn.Module):
