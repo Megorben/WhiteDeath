@@ -1,0 +1,88 @@
+type: ItemTurret
+size: 2
+health: 1100
+category: turret
+requirements: [
+  copper/120
+  graphite/90
+  titanium/80
+  silicon/50
+]
+research: lancer
+
+// Дальнобойная, медленная и очень точная
+range: 440
+reload: 110
+recoil: 3
+rotateSpeed: 2.5
+shootCone: 2
+inaccuracy: 0
+targetAir: true
+maxAmmo: 20
+shake: 2
+shootSound: railgun
+
+ammoTypes: {
+  graphite: {
+    type: BasicBulletType
+    speed: 14
+    lifetime: 32
+    damage: 140
+    width: 7
+    height: 20
+    pierce: true
+    pierceCap: 2
+    trailLength: 8
+    trailWidth: 1.6
+    trailColor: d0f4ff
+    frontColor: ffffff
+    backColor: a8e4ff
+    shootEffect: shootBig
+    smokeEffect: shootBigSmoke
+    hitEffect: hitBulletBig
+  }
+  titanium: {
+    type: BasicBulletType
+    speed: 15
+    lifetime: 30
+    damage: 110
+    width: 6
+    height: 22
+    pierce: true
+    pierceCap: 4
+    pierceArmor: true
+    reloadMultiplier: 1.2
+    trailLength: 10
+    trailWidth: 1.4
+    trailColor: b7c5ff
+    frontColor: ffffff
+    backColor: 8a9eff
+    shootEffect: shootBig
+    smokeEffect: shootBigSmoke
+    hitEffect: hitBulletBig
+  }
+  frost-round: {
+    type: BasicBulletType
+    speed: 14
+    lifetime: 32
+    damage: 160
+    width: 8
+    height: 22
+    pierce: true
+    pierceCap: 2
+    splashDamage: 45
+    splashDamageRadius: 32
+    status: freezing
+    statusDuration: 300
+    ammoMultiplier: 2
+    trailLength: 12
+    trailWidth: 2
+    trailColor: 6fd3ff
+    frontColor: ffffff
+    backColor: 6fd3ff
+    shootEffect: shootBig
+    smokeEffect: shootBigSmoke
+    hitEffect: freezing
+    despawnEffect: freezing
+  }
+}
