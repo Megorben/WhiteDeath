@@ -1,0 +1,335 @@
+package whitedeath.rl;
+
+import arc.*;
+import arc.backend.headless.*;
+import arc.files.*;
+import arc.math.*;
+import arc.util.*;
+import mindustry.*;
+import mindustry.content.*;
+import mindustry.core.*;
+import mindustry.core.GameState.*;
+import mindustry.game.*;
+import mindustry.gen.*;
+import mindustry.mod.*;
+import mindustry.net.*;
+import mindustry.type.*;
+import mindustry.world.*;
+import mindustry.world.blocks.distribution.*;
+import mindustry.world.blocks.production.*;
+
+import java.io.*;
+import java.nio.charset.*;
+import java.util.*;
+
+import static mindustry.Vars.*;
+
+/**
+ * Headless Mindustry simulator for reinforcement learning.
+ *
+ * The game loop is stopped right after initialization (the same trick Mindustry's own tests use),
+ * so time only advances when the agent asks for it. That makes the simulation run as fast as the CPU allows.
+ *
+ * Protocol: one command per line on stdin, one JSON response per line on stdout.
+ *   reset <seed>   start a new episode on a freshly generated map
+ *   step <action>  apply an action, simulate ticksPerStep game ticks
+ *   close          exit
+ *
+ * Task "mining": the agent places mechanical drills and conveyors to deliver as much copper and lead
+ * to the core as possible before the episode ends. Buildings appear instantly and cost core resources.
+ */
+public class SimServer{
+    // Observation channels (one byte per cell each)
+    static final int
+    chOreCopper = 0, chOreLead = 1, chWall = 2, chCore = 3, chDrill = 4,
+    chConveyor = 5, // 5..8: conveyor facing right, up, left, down
+    chHasItems = 9,
+    channels = 10;
+
+    static int size = 24, ticksPerStep = 60, maxSteps = 150, startCopper = 120;
+
+    static PrintStream out;
+    static Rand rand = new Rand();
+    static Building core;
+    static int stepIndex;
+    static long totalIncome;
+
+    public static void main(String[] args) throws Exception{
+        for(int i = 0; i + 1 < args.length; i += 2){
+            int value = Integer.parseInt(args[i + 1]);
+            switch(args[i]){
+                case "--size" -> size = value;
+                case "--ticks" -> ticksPerStep = value;
+                case "--steps" -> maxSteps = value;
+                case "--copper" -> startCopper = value;
+                default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
+            }
+        }
+
+        //stdout is reserved for the protocol; game logs go to stderr
+        out = new PrintStream(new FileOutputStream(FileDescriptor.out), false, StandardCharsets.UTF_8);
+        System.setOut(System.err);
+
+        launch();
+
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        String line;
+        while((line = in.readLine()) != null){
+            String[] cmd = line.trim().split(" ");
+            switch(cmd[0]){
+                case "reset" -> reset(cmd.length > 1 ? Long.parseLong(cmd[1]) : System.nanoTime());
+                case "step" -> step(Integer.parseInt(cmd[1]));
+                case "close" -> System.exit(0);
+                default -> respondError("unknown command: " + cmd[0]);
+            }
+        }
+        System.exit(0);
+    }
+
+    static void launch() throws Exception{
+        boolean[] begins = {false};
+        Throwable[] error = {null};
+        Fi dataDir = new Fi(System.getProperty("java.io.tmpdir")).child("whitedeath-rl-" + ProcessHandle.current().pid());
+        Log.useColors = false;
+
+        ApplicationCore app = new ApplicationCore(){
+            @Override
+            public void setup(){
+                Core.settings.setDataDirectory(dataDir);
+                headless = true;
+                net = new Net(null);
+                tree = new FileTree();
+                Vars.init();
+                world = new World(){
+                    @Override
+                    public float getDarkness(int x, int y){
+                        return 0;
+                    }
+                };
+                content.createBaseContent();
+                mods.loadScripts();
+                content.createModContent();
+
+                add(logic = new Logic());
+                add(netServer = new NetServer());
+
+                content.init();
+                mods.eachClass(Mod::init);
+            }
+
+            @Override
+            public void init(){
+                super.init();
+                begins[0] = true;
+                //stop the application loop: from here on the main thread drives the simulation
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        new HeadlessApplication(app, t -> {
+            if(!begins[0]) error[0] = t;
+        });
+
+        while(!begins[0]){
+            if(error[0] != null) throw new RuntimeException(error[0]);
+            Thread.sleep(10);
+        }
+
+        Runtime.getRuntime().addShutdownHook(new Thread(dataDir::deleteDirectory));
+        Time.setDeltaProvider(() -> 1f);
+    }
+
+    static void reset(long seed){
+        rand.setSeed(seed);
+        logic.reset();
+        world.loadGenerator(size, size, SimServer::generate);
+
+        state.rules = new Rules();
+        state.rules.waves = false;
+        state.rules.fog = false;
+        state.rules.limitMapArea = false;
+        state.set(State.playing);
+
+        core = Team.sharded.core();
+        core.items.clear();
+        core.items.set(Items.copper, startCopper);
+
+        stepIndex = 0;
+        totalIncome = 0;
+        respond(0f, 0, false);
+    }
+
+    static void generate(Tiles tiles){
+        for(int x = 0; x < size; x++){
+            for(int y = 0; y < size; y++){
+                boolean edge = x == 0 || y == 0 || x == size - 1 || y == size - 1;
+                tiles.set(x, y, new Tile(x, y, Blocks.stone, Blocks.air, edge ? Blocks.stoneWall : Blocks.air));
+            }
+        }
+
+        //rock clusters
+        int rocks = rand.random(2, 5);
+        for(int i = 0; i < rocks; i++){
+            blob(tiles, rand.random(2, size - 3), rand.random(2, size - 3), rand.random(1f, 2.2f), t -> t.setBlock(Blocks.stoneWall));
+        }
+
+        //ore patches, alternating copper and lead so both always exist
+        int patches = rand.random(3, 5);
+        for(int i = 0; i < patches; i++){
+            Block ore = i % 2 == 0 ? Blocks.oreCopper : Blocks.oreLead;
+            blob(tiles, rand.random(2, size - 3), rand.random(2, size - 3), rand.random(1.5f, 2.8f), t -> {
+                if(!t.solid()) t.setOverlay(ore);
+            });
+        }
+
+        //core with a clear ring around it
+        int cx = rand.random(4, size - 5), cy = rand.random(4, size - 5);
+        for(int x = cx - 2; x <= cx + 2; x++){
+            for(int y = cy - 2; y <= cy + 2; y++){
+                Tile t = tiles.get(x, y);
+                t.setBlock(Blocks.air);
+                t.setOverlay(Blocks.air);
+            }
+        }
+        tiles.get(cx, cy).setBlock(Blocks.coreShard, Team.sharded, 0);
+    }
+
+    static void blob(Tiles tiles, int cx, int cy, float radius, arc.func.Cons<Tile> cons){
+        int r = Mathf.ceil(radius);
+        for(int x = cx - r; x <= cx + r; x++){
+            for(int y = cy - r; y <= cy + r; y++){
+                Tile t = tiles.get(x, y);
+                if(t == null || x <= 0 || y <= 0 || x >= size - 1 || y >= size - 1) continue;
+                if(Mathf.dst(x, y, cx, cy) <= radius && rand.chance(0.85f)) cons.get(t);
+            }
+        }
+    }
+
+    // ---- actions ----
+    // 0: do nothing; 1..S²: drill at cell; S²+1..5S²: conveyor at cell with rotation (cell * 4 + rotation)
+
+    static int actionCount(){
+        return 1 + size * size * 5;
+    }
+
+    static void step(int action){
+        if(action < 0 || action >= actionCount()){
+            respondError("action out of range: " + action);
+            return;
+        }
+
+        boolean placed = false;
+        if(action > 0){
+            int a = action - 1, cells = size * size;
+            Block block;
+            int cell, rotation;
+            if(a < cells){
+                block = Blocks.mechanicalDrill;
+                cell = a;
+                rotation = 0;
+            }else{
+                block = Blocks.conveyor;
+                cell = (a - cells) / 4;
+                rotation = (a - cells) % 4;
+            }
+            placed = place(block, cell % size, cell / size, rotation);
+        }
+
+        int before = coreItems();
+        for(int i = 0; i < ticksPerStep && core.isValid(); i++){
+            Time.update();
+            logic.update();
+        }
+        int income = Math.max(coreItems() - before, 0);
+        totalIncome += income;
+        stepIndex++;
+
+        float reward = income * 0.1f;
+        respond(reward, income, stepIndex >= maxSteps || !core.isValid());
+        if(action > 0 && !placed) Log.warn("Invalid action @ was ignored", action);
+    }
+
+    static boolean canPlace(Block block, int x, int y, int rotation){
+        return core.items.has(block.requirements) && Build.validPlace(block, Team.sharded, x, y, rotation, false);
+    }
+
+    static boolean place(Block block, int x, int y, int rotation){
+        if(!canPlace(block, x, y, rotation)) return false;
+        core.items.remove(block.requirements);
+        Tile tile = world.tile(x, y);
+        tile.setBlock(block, Team.sharded, rotation);
+        if(tile.build != null) tile.build.placed();
+        return true;
+    }
+
+    static int coreItems(){
+        return core.items.get(Items.copper) + core.items.get(Items.lead);
+    }
+
+    // ---- observation ----
+
+    static byte[] observe(){
+        byte[] obs = new byte[channels * size * size];
+        for(int y = 0; y < size; y++){
+            for(int x = 0; x < size; x++){
+                Tile t = world.tile(x, y);
+                int cell = y * size + x;
+                Block ore = t.overlay();
+                if(ore == Blocks.oreCopper) obs[chOreCopper * size * size + cell] = 1;
+                if(ore == Blocks.oreLead) obs[chOreLead * size * size + cell] = 1;
+                if(t.block().isStatic()) obs[chWall * size * size + cell] = 1;
+
+                Building b = t.build;
+                if(b == null) continue;
+                if(b.block == Blocks.coreShard) obs[chCore * size * size + cell] = 1;
+                if(b.block instanceof Drill) obs[chDrill * size * size + cell] = 1;
+                if(b.block instanceof Conveyor) obs[(chConveyor + b.rotation) * size * size + cell] = 1;
+                if(b.block != Blocks.coreShard && b.items != null && b.items.total() > 0) obs[chHasItems * size * size + cell] = 1;
+            }
+        }
+        return obs;
+    }
+
+    static byte[] actionMask(){
+        int cells = size * size;
+        byte[] mask = new byte[actionCount()];
+        mask[0] = 1;
+        boolean drillAffordable = core.items.has(Blocks.mechanicalDrill.requirements);
+        boolean conveyorAffordable = core.items.has(Blocks.conveyor.requirements);
+        for(int cell = 0; cell < cells; cell++){
+            int x = cell % size, y = cell / size;
+            if(drillAffordable && Build.validPlace(Blocks.mechanicalDrill, Team.sharded, x, y, 0, false)){
+                mask[1 + cell] = 1;
+            }
+            if(conveyorAffordable && Build.validPlace(Blocks.conveyor, Team.sharded, x, y, 0, false)){
+                for(int r = 0; r < 4; r++) mask[1 + cells + cell * 4 + r] = 1;
+            }
+        }
+        return mask;
+    }
+
+    // ---- protocol ----
+
+    static void respond(float reward, int income, boolean done){
+        Base64.Encoder b64 = Base64.getEncoder();
+        String json = "{\"obs\":\"" + b64.encodeToString(observe()) +
+            "\",\"mask\":\"" + b64.encodeToString(actionMask()) +
+            "\",\"reward\":" + reward +
+            ",\"done\":" + done +
+            ",\"copper\":" + core.items.get(Items.copper) +
+            ",\"lead\":" + core.items.get(Items.lead) +
+            ",\"income\":" + income +
+            ",\"total_income\":" + totalIncome +
+            ",\"step\":" + stepIndex +
+            ",\"size\":" + size +
+            ",\"channels\":" + channels +
+            ",\"max_steps\":" + maxSteps + "}";
+        out.println(json);
+        out.flush();
+    }
+
+    static void respondError(String message){
+        out.println("{\"error\":\"" + message.replace("\"", "'") + "\"}");
+        out.flush();
+    }
+}
