@@ -47,8 +47,9 @@ public class MatchRecorder{
 
     Fi dir;
     Writer out;
-    boolean active;
+    boolean active, midMatch;
     float time;
+    long bytes;
     int nextSnapshot, nextPlayers, nextKeyframe, keyframes;
     int width, height;
     int[] buildings;
@@ -62,7 +63,7 @@ public class MatchRecorder{
     public void register(Boolp shouldRecord){
         Events.on(WorldLoadEvent.class, e -> {
             stop("next-map", null);
-            if(shouldRecord.get()) start();
+            if(shouldRecord.get()) start(false);
         });
         Events.on(GameOverEvent.class, e -> stop("game-over", e.winner));
         Events.on(ResetEvent.class, e -> stop("left", null));
@@ -84,9 +85,16 @@ public class MatchRecorder{
         return dir;
     }
 
+    /** Uncompressed size of the event log so far, to show that recording is alive. */
+    public long bytes(){
+        return bytes;
+    }
+
     // ---- lifecycle ----
 
-    public void start(){
+    /** @param midMatch true when started by hand in a running match: the recording then lacks the opening. */
+    public void start(boolean midMatch){
+        this.midMatch = midMatch;
         try{
             String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
             String base = stamp + "-" + sanitize(state.map == null ? "map" : state.map.name());
@@ -103,6 +111,7 @@ public class MatchRecorder{
 
         active = true;
         time = 0;
+        bytes = 0;
         nextSnapshot = nextPlayers = nextKeyframe = 0;
         keyframes = 0;
         width = world.width();
@@ -162,7 +171,8 @@ public class MatchRecorder{
             .str("map", state.map == null ? null : state.map.name())
             .num("w", width).num("h", height)
             .str("recorded", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ").format(new Date()))
-            .str("server", net.client() ? "remote" : "local");
+            .str("server", net.client() ? "remote" : "local")
+            .bool("midMatch", midMatch);
 
         Json rules = new Json()
             .bool("pvp", state.rules.pvp).bool("fog", state.rules.fog).bool("attack", state.rules.attackMode)
@@ -378,8 +388,10 @@ public class MatchRecorder{
     void write(Json json){
         if(out == null) return;
         try{
-            out.write(json.close());
+            String text = json.close();
+            out.write(text);
             out.write('\n');
+            bytes += text.length() + 1;
         }catch(IOException e){
             Log.err("[WhiteDeath] Write failed, recording stopped", e);
             active = false;
