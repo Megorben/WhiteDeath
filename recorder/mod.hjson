@@ -3,7 +3,7 @@ displayName: WhiteDeath Recorder
 author: Megorben
 description: "Records the PvP matches you watch or play (buildings, units, commands, keyframes) for training a Mindustry AI. Only reads what your client already receives; player names are stored as anonymous hashes."
 version: "1.0.0"
-minGameVersion: 146
+minGameVersion: "160"
 java: true
 main: whitedeath.recorder.RecorderMod
 hidden: true

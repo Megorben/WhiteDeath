@@ -1,12 +1,14 @@
 #!/usr/bin/env sh
-# Builds dist/WhiteDeathRecorder.jar (desktop Mindustry v146+). Pass --test to also run the headless check.
+# Builds dist/WhiteDeathRecorder.jar (desktop Mindustry build 160+). Pass --test to also run the headless check.
 set -e
 cd "$(dirname "$0")"
 
-JAR=../rl/sim/lib/server-v146.jar
+# Same build as the Steam release; Java mods must declare minGameVersion >= 154 or the game refuses them
+VERSION=v160.7
+JAR=../rl/sim/lib/server-$VERSION.jar
 if [ ! -f "$JAR" ]; then
   mkdir -p ../rl/sim/lib
-  curl -fL -o "$JAR" "https://github.com/Anuken/Mindustry/releases/download/v146/server-release.jar"
+  curl -fL -o "$JAR" "https://github.com/Anuken/Mindustry/releases/download/$VERSION/server-release.jar"
 fi
 
 rm -rf build && mkdir -p build/classes dist

@@ -38,7 +38,7 @@ import static mindustry.Vars.*;
  * Player names are replaced by salted hashes, stable across matches so players can be rated later.
  */
 public class MatchRecorder{
-    public static final int formatVersion = 1;
+    public static final int formatVersion = 2;
 
     public int snapshotTicks = 30, playerTicks = 300, keyframeTicks = 3600;
 
@@ -174,12 +174,8 @@ public class MatchRecorder{
         line.raw("blocks", names(content.blocks()));
         line.raw("units", names(content.units()));
         line.raw("items", names(content.items()));
-        StringBuilder commands = new StringBuilder("[");
-        for(int i = 0; i < UnitCommand.all.size; i++){
-            if(i > 0) commands.append(',');
-            Json.quote(commands, UnitCommand.all.get(i).name);
-        }
-        line.raw("commands", commands.append(']').toString());
+        line.raw("commands", names(content.unitCommands()));
+        line.raw("stances", names(content.unitStances()));
 
         //terrain as little-endian uint16 block ids, row-major from y = 0
         short[][] layers = new short[3][width * height];
@@ -251,7 +247,7 @@ public class MatchRecorder{
         return (block + 1) << 12 | (team & 0xff) << 4 | (rotation & 3) << 1 | (site ? 1 : 0);
     }
 
-    /** Every unit: [id, type, team, x*10, y*10 (tiles), health %, command, targetX*10, targetY*10, player]. */
+    /** Every unit: [id, type, team, x*10, y*10 (tiles), health %, command, targetX*10, targetY*10, player, [stances]]. */
     void snapshotUnits(){
         StringBuilder sb = new StringBuilder("[");
         boolean first = true;
@@ -259,7 +255,12 @@ public class MatchRecorder{
             if(!first) sb.append(',');
             first = false;
             int cmd = -1, tx = -1, ty = -1;
+            StringBuilder stances = new StringBuilder("[");
             if(u.controller() instanceof CommandAI ai){
+                for(int s = ai.stances.nextSetBit(0); s >= 0; s = ai.stances.nextSetBit(s + 1)){
+                    if(stances.length() > 1) stances.append(',');
+                    stances.append(s);
+                }
                 if(ai.command != null) cmd = ai.command.id;
                 if(ai.targetPos != null){
                     tx = Math.round(ai.targetPos.x / tilesize * 10);
@@ -273,7 +274,7 @@ public class MatchRecorder{
             Player p = u.getPlayer();
             if(p == null) sb.append("null");
             else Json.quote(sb, pseudonym(p.name));
-            sb.append(']');
+            sb.append(',').append(stances).append("]]");
         }
         write(line("units").raw("u", sb.append(']').toString()));
     }
