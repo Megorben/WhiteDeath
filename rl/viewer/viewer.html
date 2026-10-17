@@ -1,0 +1,537 @@
+<title>Повторы ИИ Mindustry</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Russo+One&display=swap">
+<style>
+/* Layout: a control-room console. Summary strip, map picker, two boards side by side
+   (stacked on phones) sharing one transport bar, then the delivery chart. Dark only, like the game's UI. */
+:root {
+  --bg: #15171b;        /* page */
+  --panel: #1b1e23;     /* boards, chart surface */
+  --raise: #23272e;     /* buttons, chips */
+  --line: #2f343c;      /* hairlines, grid */
+  --fg: #e8e4da;        /* warm off-white text */
+  --muted: #959ca8;     /* secondary text */
+  --agent: #2f9dc0;     /* neural network series */
+  --bot: #c98420;       /* scripted bot series */
+  --core: #ffd37f;      /* Mindustry core yellow, map only */
+  --win: #6cc58a;       /* "agent won this map" marker */
+  --font-display: "Russo One", "Arial Black", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  background: var(--bg); color: var(--fg);
+  font: 15px/1.5 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+}
+.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+header { display: flex; flex-direction: column; gap: 6px; }
+.eyebrow { font: 600 11px/1 var(--font-data); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+h1 { font: 400 clamp(28px, 4.4vw, 42px)/1.05 var(--font-display); margin: 0; letter-spacing: .01em; text-wrap: balance; }
+.lede { color: var(--muted); margin: 0; max-width: 68ch; }
+
+.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.summary > div { background: var(--panel); padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.summary .k { font-size: 12px; color: var(--muted); }
+.summary .v { font: 600 24px/1.2 var(--font-data); font-variant-numeric: tabular-nums; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
+
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.section-head h2 { font: 400 15px/1.2 var(--font-display); margin: 0; letter-spacing: .04em; text-transform: uppercase; }
+.section-head p { margin: 0; font-size: 13px; color: var(--muted); }
+.maps { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 6px; }
+.chip {
+  font: inherit; color: var(--fg); background: var(--raise); border: 1px solid var(--line); border-radius: 4px;
+  padding: 6px 4px 5px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; position: relative;
+}
+.chip .n { font: 600 13px/1.2 var(--font-data); }
+.chip .s { font: 400 11px/1.2 var(--font-data); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip.won::after { content: ""; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--win); }
+.chip[aria-pressed="true"] { border-color: var(--fg); background: var(--line); }
+.chip:hover { border-color: var(--muted); }
+
+.boards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.board { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.board-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.who .name { font: 400 16px/1.2 var(--font-display); }
+.who .role { font-size: 12px; color: var(--muted); }
+.big { text-align: right; }
+.big .v { font: 600 30px/1 var(--font-data); font-variant-numeric: tabular-nums; }
+.big .k { font-size: 11px; color: var(--muted); }
+canvas.map { width: 100%; aspect-ratio: 1; max-width: 100%; display: block; border-radius: 3px; image-rendering: pixelated; }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; font-size: 12px; }
+.stats div { display: flex; flex-direction: column; min-width: 0; }
+.stats .k { color: var(--muted); }
+.stats .v { font: 600 15px/1.3 var(--font-data); font-variant-numeric: tabular-nums; }
+.lastmove { font: 400 12px/1.4 var(--font-data); color: var(--muted); min-height: 1.4em; overflow-wrap: anywhere; }
+.lastmove b { color: var(--fg); font-weight: 600; }
+
+.transport {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+}
+.btn {
+  font: 600 13px/1 var(--font-body); color: var(--fg); background: var(--raise); border: 1px solid var(--line);
+  border-radius: 4px; padding: 8px 12px; cursor: pointer; min-height: 36px;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.play { min-width: 112px; background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.speeds { display: flex; gap: 4px; }
+.speeds .btn { padding: 8px 9px; font-family: var(--font-data); font-weight: 400; }
+.speeds .btn[aria-pressed="true"] { border-color: var(--fg); background: var(--line); }
+.scrub { flex: 1 1 220px; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.scrub input { flex: 1; min-width: 0; accent-color: var(--fg); }
+.scrub .num { font-size: 13px; white-space: nowrap; color: var(--muted); }
+.scrub .num b { color: var(--fg); font-weight: 600; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+
+.chart-card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 12px 6px; display: flex; flex-direction: column; gap: 8px; position: relative; }
+.legend-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+#chart { width: 100%; height: 220px; display: block; cursor: crosshair; touch-action: pan-y; }
+#chart text { font: 11px var(--font-data); fill: var(--muted); }
+.tip {
+  position: absolute; pointer-events: none; background: var(--raise); border: 1px solid var(--line); border-radius: 4px;
+  padding: 6px 8px; font: 12px/1.5 var(--font-data); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+.keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; font-size: 13px; color: var(--muted); }
+.keys div { display: flex; align-items: center; gap: 8px; }
+.keys canvas { width: 22px; height: 22px; border-radius: 2px; flex: none; }
+.note { font-size: 13px; color: var(--muted); max-width: 80ch; margin: 0; }
+
+@media (max-width: 760px) {
+  .boards { grid-template-columns: minmax(0, 1fr); }
+  .maps { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">WhiteDeath · обучение с подкреплением · задача «добыча»</div>
+    <h1>Повторы ИИ</h1>
+    <p class="lede">Нейросеть и скриптовый бот строят буры и конвейеры на одних и тех же 20 картах. Нейросеть этих карт при обучении не видела. Цель: за 150 секунд игрового времени доставить в ядро как можно больше меди и свинца.</p>
+  </header>
+
+  <div class="summary" id="summary"></div>
+
+  <section style="display:flex;flex-direction:column;gap:10px">
+    <div class="section-head">
+      <h2>Карта</h2>
+      <p>Под номером — сколько доставили нейросеть / бот. <span class="swatch" style="background:var(--win);border-radius:50%"></span>нейросеть обыграла бота</p>
+    </div>
+    <div class="maps" id="maps"></div>
+  </section>
+
+  <div class="transport">
+    <button class="btn play" id="play" type="button">▶ Смотреть</button>
+    <button class="btn" id="back" type="button" aria-label="Шаг назад">◀︎ шаг</button>
+    <button class="btn" id="fwd" type="button" aria-label="Шаг вперёд">шаг ▶︎</button>
+    <div class="scrub">
+      <input type="range" id="scrub" min="0" max="150" value="150" aria-label="Шаг партии">
+      <span class="num" id="stepLabel"></span>
+    </div>
+    <div class="speeds" id="speeds" role="group" aria-label="Скорость">
+      <button class="btn" type="button" data-speed="1">1×</button>
+      <button class="btn" type="button" data-speed="2" aria-pressed="true">2×</button>
+      <button class="btn" type="button" data-speed="4">4×</button>
+      <button class="btn" type="button" data-speed="8">8×</button>
+    </div>
+  </div>
+
+  <div class="boards">
+    <div class="board" id="board-agent">
+      <div class="board-head">
+        <div class="who"><span class="name"><span class="swatch" style="background:var(--agent)"></span>Нейросеть</span><span class="role">DAgger + PPO, решает сама по карте</span></div>
+        <div class="big"><div class="v" data-k="delivered">0</div><div class="k">доставлено</div></div>
+      </div>
+      <canvas class="map" aria-label="Карта нейросети"></canvas>
+      <div class="stats">
+        <div><span class="k">медь</span><span class="v" data-k="copper"></span></div>
+        <div><span class="k">свинец</span><span class="v" data-k="lead"></span></div>
+        <div><span class="k">буров</span><span class="v" data-k="drills"></span></div>
+        <div><span class="k">конвейеров</span><span class="v" data-k="convs"></span></div>
+      </div>
+      <div class="lastmove" data-k="last"></div>
+    </div>
+    <div class="board" id="board-bot">
+      <div class="board-head">
+        <div class="who"><span class="name"><span class="swatch" style="background:var(--bot)"></span>Скриптовый бот</span><span class="role">правила + поиск пути, учитель нейросети</span></div>
+        <div class="big"><div class="v" data-k="delivered">0</div><div class="k">доставлено</div></div>
+      </div>
+      <canvas class="map" aria-label="Карта бота"></canvas>
+      <div class="stats">
+        <div><span class="k">медь</span><span class="v" data-k="copper"></span></div>
+        <div><span class="k">свинец</span><span class="v" data-k="lead"></span></div>
+        <div><span class="k">буров</span><span class="v" data-k="drills"></span></div>
+        <div><span class="k">конвейеров</span><span class="v" data-k="convs"></span></div>
+      </div>
+      <div class="lastmove" data-k="last"></div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="section-head">
+      <h2>Доставлено в ядро</h2>
+      <div class="legend-row">
+        <span><span class="swatch" style="background:var(--agent)"></span>Нейросеть</span>
+        <span><span class="swatch" style="background:var(--bot)"></span>Скриптовый бот</span>
+      </div>
+    </div>
+    <svg id="chart" role="img" aria-label="Накопленная доставка ресурсов по шагам"></svg>
+    <div class="tip" id="tip" hidden></div>
+  </div>
+
+  <section style="display:flex;flex-direction:column;gap:10px">
+    <div class="section-head"><h2>Обозначения</h2></div>
+    <div class="keys" id="keys"></div>
+  </section>
+
+  <p class="note">Один шаг — одно действие и 1 секунда игрового времени в настоящем движке Mindustry v146. Постройки появляются сразу и стоят ресурсов ядра: бур — 12 меди, конвейер — 1. Старт со 120 медью. Нейросеть играет детерминированно (всегда выбирает самый вероятный ход). Подсвеченная рамка — постройка, поставленная на текущем шаге.</p>
+</div>
+
+<script type="application/json" id="replays">/*REPLAYS*/null</script>
+<script>
+(() => {
+  const D = JSON.parse(document.getElementById("replays").textContent);
+  const S = D.size, CELLS = S * S, STEPS = 150;
+  const css = getComputedStyle(document.documentElement);
+  const tok = n => css.getPropertyValue(n).trim();
+  const C = {
+    floor: "#262a31", floor2: "#23272d", wall: "#454b55", wallTop: "#575e69", wallEdge: "#2f343b",
+    copper: "#d99d73", lead: "#8c7fa9", core: tok("--core"), coreBody: "#4a4236", coreDeep: "#2e2a24",
+    drill: "#6b717b", drillEdge: "#3a3e45", drillDeep: "#50555e", belt: "#3c4048", beltRail: "#555b65", chevron: "#7e8591",
+    agent: tok("--agent"), bot: tok("--bot"),
+  };
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ARROWS = ["→", "↑", "←", "↓"];
+
+  let mapIdx = 0, step = STEPS, playing = false, speed = 2;
+
+  // ---------- data helpers ----------
+  function decode(a) {
+    if (a === 0) return { kind: "wait" };
+    if (a <= CELLS) { const c = a - 1; return { kind: "drill", x: c % S, y: (c / S) | 0 }; }
+    const c = ((a - 1 - CELLS) / 4) | 0, r = (a - 1 - CELLS) % 4;
+    return { kind: "conv", x: c % S, y: (c / S) | 0, r };
+  }
+  function buildingsAt(rep, k) {
+    const drills = [], convs = [];
+    for (let i = 0; i < k; i++) {
+      const d = decode(rep.actions[i]);
+      if (d.kind === "drill") drills.push({ ...d, i });
+      else if (d.kind === "conv") convs.push({ ...d, i });
+    }
+    return { drills, convs };
+  }
+  function flowAt(rep, k) {
+    const out = new Uint8Array(CELLS);
+    if (k <= 0) return out;
+    const hex = rep.flow[k - 1];
+    for (let j = 0; j < CELLS; j++) {
+      const byte = parseInt(hex.substr((j >> 3) * 2, 2), 16);
+      out[j] = (byte >> (7 - (j & 7))) & 1;
+    }
+    return out;
+  }
+  const statAt = (rep, key, k) => (k <= 0 ? (key === "copper" ? D.startCopper : 0) : rep[key][k - 1]);
+
+  // ---------- drawing ----------
+  function drawTile(g, t, px, py, cs, odd) {
+    g.fillStyle = odd ? C.floor : C.floor2;
+    g.fillRect(px, py, cs, cs);
+    if (t === "#") {
+      g.fillStyle = C.wall; g.fillRect(px, py, cs, cs);
+      g.fillStyle = C.wallTop; g.fillRect(px, py, cs, cs * 0.28);
+      g.fillStyle = C.wallEdge; g.fillRect(px, py + cs * 0.86, cs, cs * 0.14);
+    } else if (t === "c" || t === "l") {
+      g.fillStyle = t === "c" ? C.copper : C.lead;
+      const q = cs * 0.2;
+      g.fillRect(px + cs * 0.18, py + cs * 0.2, q, q);
+      g.fillRect(px + cs * 0.58, py + cs * 0.34, q, q);
+      g.fillRect(px + cs * 0.3, py + cs * 0.62, q, q);
+    }
+  }
+  function drawTerrain(g, terrain, cs) {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) drawTile(g, terrain[y][x], x * cs, (S - 1 - y) * cs, cs, (x + y) % 2);
+  }
+  function drawCore(g, terrain, cs) {
+    let mx = S, my = S;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) if (terrain[y][x] === "C") { mx = Math.min(mx, x); my = Math.min(my, y); }
+    if (mx === S) return;
+    const px = mx * cs, py = (S - 1 - (my + 2)) * cs, w = cs * 3;
+    g.fillStyle = C.coreDeep; g.fillRect(px, py, w, w);
+    g.fillStyle = C.coreBody; g.fillRect(px + cs * 0.15, py + cs * 0.15, w - cs * 0.3, w - cs * 0.3);
+    g.strokeStyle = C.core; g.lineWidth = Math.max(1, cs * 0.12);
+    g.strokeRect(px + cs * 0.35, py + cs * 0.35, w - cs * 0.7, w - cs * 0.7);
+    g.fillStyle = C.core; g.fillRect(px + cs * 1.2, py + cs * 1.2, cs * 0.6, cs * 0.6);
+  }
+  function oreUnder(terrain, x, y) {
+    let c = 0, l = 0;
+    for (let dx = 0; dx < 2; dx++) for (let dy = 0; dy < 2; dy++) {
+      const t = terrain[y + dy][x + dx]; if (t === "c") c++; else if (t === "l") l++;
+    }
+    return l > c ? C.lead : C.copper;
+  }
+  function drawDrill(g, d, terrain, cs, spin) {
+    const px = d.x * cs, py = (S - 1 - (d.y + 1)) * cs, w = cs * 2;
+    g.fillStyle = C.drillEdge; g.fillRect(px + 1, py + 1, w - 2, w - 2);
+    g.fillStyle = C.drill; g.fillRect(px + cs * 0.14, py + cs * 0.14, w - cs * 0.28, w - cs * 0.28);
+    g.fillStyle = C.drillDeep; g.fillRect(px + cs * 0.5, py + cs * 0.5, cs, cs);
+    g.save();
+    g.translate(px + cs, py + cs); g.rotate(spin);
+    g.fillStyle = oreUnder(terrain, d.x, d.y);
+    const b = cs * 0.62, t = cs * 0.2;
+    g.fillRect(-b / 2, -t / 2, b, t); g.fillRect(-t / 2, -b / 2, t, b);
+    g.restore();
+  }
+  function drawConveyor(g, c, cs, phase, hasItem) {
+    const cx = c.x * cs + cs / 2, cy = (S - 1 - c.y) * cs + cs / 2;
+    g.save();
+    g.translate(cx, cy); g.rotate(-c.r * Math.PI / 2);  // rotation 0 = right; canvas y points down
+    g.fillStyle = C.belt; g.fillRect(-cs / 2, -cs / 2, cs, cs);
+    g.fillStyle = C.beltRail; g.fillRect(-cs / 2, -cs / 2, cs, cs * 0.14); g.fillRect(-cs / 2, cs * 0.36, cs, cs * 0.14);
+    g.beginPath(); g.rect(-cs / 2, -cs / 2, cs, cs); g.clip();
+    g.strokeStyle = C.chevron; g.lineWidth = Math.max(1, cs * 0.09);
+    for (let k = -1; k < 2; k++) {
+      const off = ((phase + k) * cs * 0.5) % cs - cs / 2 + cs * 0.25;
+      g.beginPath(); g.moveTo(off - cs * 0.12, -cs * 0.2); g.lineTo(off + cs * 0.06, 0); g.lineTo(off - cs * 0.12, cs * 0.2); g.stroke();
+    }
+    if (hasItem) {
+      const ix = ((phase * 0.5) % 1) * cs - cs / 2, q = cs * 0.36;
+      g.fillStyle = C.copper; g.fillRect(ix - q / 2, -q / 2, q, q);
+      g.strokeStyle = "rgba(0,0,0,.45)"; g.lineWidth = 1; g.strokeRect(ix - q / 2, -q / 2, q, q);
+    }
+    g.restore();
+  }
+  function drawBoard(canvas, map, rep, k, t, color) {
+    const dpr = window.devicePixelRatio || 1, size = Math.round(canvas.clientWidth * dpr);
+    if (!size) return;
+    if (canvas.width !== size) { canvas.width = size; canvas.height = size; }
+    const g = canvas.getContext("2d"), cs = size / S;
+    g.imageSmoothingEnabled = false;
+    drawTerrain(g, map.terrain, cs);
+    drawCore(g, map.terrain, cs);
+    const { drills, convs } = buildingsAt(rep, k), flow = flowAt(rep, k);
+    const phase = reduceMotion ? 0.5 : (t / 1000) * 2.2;
+    for (const c of convs) drawConveyor(g, c, cs, phase, flow[c.y * S + c.x]);
+    for (const d of drills) drawDrill(g, d, map.terrain, cs, reduceMotion ? 0.4 : (t / 1000) * 2.5 + d.i);
+    const last = k > 0 ? decode(rep.actions[k - 1]) : null;
+    if (last && last.kind !== "wait") {
+      const n = last.kind === "drill" ? 2 : 1, px = last.x * cs, py = (S - 1 - (last.y + n - 1)) * cs;
+      g.strokeStyle = color; g.lineWidth = Math.max(2, cs * 0.14);
+      g.strokeRect(px + g.lineWidth / 2, py + g.lineWidth / 2, n * cs - g.lineWidth, n * cs - g.lineWidth);
+    }
+  }
+
+  // ---------- page ----------
+  const maps = D.maps;
+  const mean = a => a.reduce((s, v) => s + v, 0) / a.length;
+  const finals = maps.map(m => ({ agent: m.agent.delivered[STEPS - 1], bot: m.bot.delivered[STEPS - 1] }));
+  const avgA = mean(finals.map(f => f.agent)), avgB = mean(finals.map(f => f.bot));
+  const wins = finals.filter(f => f.agent > f.bot).length;
+  document.getElementById("summary").innerHTML = `
+    <div><span class="k"><span class="swatch" style="background:var(--agent)"></span>Нейросеть, в среднем</span><span class="v">${avgA.toFixed(1)}</span></div>
+    <div><span class="k"><span class="swatch" style="background:var(--bot)"></span>Бот, в среднем</span><span class="v">${avgB.toFixed(1)}</span></div>
+    <div><span class="k">Нейросеть от уровня бота</span><span class="v">${Math.round(avgA / avgB * 100)}%</span></div>
+    <div><span class="k">Карт, где нейросеть впереди</span><span class="v">${wins} из ${maps.length}</span></div>`;
+
+  const mapsEl = document.getElementById("maps");
+  maps.forEach((m, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "chip" + (finals[i].agent > finals[i].bot ? " won" : "");
+    b.id = "map-" + i;
+    b.setAttribute("aria-label", `Карта ${i + 1}: нейросеть ${finals[i].agent}, бот ${finals[i].bot}`);
+    b.innerHTML = `<span class="n">№${i + 1}</span><span class="s">${finals[i].agent}/${finals[i].bot}</span>`;
+    b.addEventListener("click", () => selectMap(i));
+    mapsEl.appendChild(b);
+  });
+
+  const boards = {
+    agent: { el: document.getElementById("board-agent"), color: C.agent },
+    bot: { el: document.getElementById("board-bot"), color: C.bot },
+  };
+  for (const b of Object.values(boards)) {
+    b.canvas = b.el.querySelector("canvas");
+    b.f = Object.fromEntries([...b.el.querySelectorAll("[data-k]")].map(e => [e.dataset.k, e]));
+  }
+
+  const scrub = document.getElementById("scrub"), stepLabel = document.getElementById("stepLabel");
+  const playBtn = document.getElementById("play");
+
+  function describe(rep, k) {
+    if (k === 0) return "Старт: 120 меди, построек нет";
+    const d = decode(rep.actions[k - 1]);
+    const head = `Шаг ${k}: `;
+    if (d.kind === "wait") return head + "<b>ждёт</b>";
+    if (d.kind === "drill") return head + `<b>бур</b> в (${d.x}, ${d.y})`;
+    return head + `<b>конвейер ${ARROWS[d.r]}</b> в (${d.x}, ${d.y})`;
+  }
+  function updateText() {
+    const m = maps[mapIdx];
+    for (const [key, b] of Object.entries(boards)) {
+      const rep = m[key], { drills, convs } = buildingsAt(rep, step);
+      b.f.delivered.textContent = statAt(rep, "delivered", step);
+      b.f.copper.textContent = statAt(rep, "copper", step);
+      b.f.lead.textContent = statAt(rep, "lead", step);
+      b.f.drills.textContent = drills.length;
+      b.f.convs.textContent = convs.length;
+      b.f.last.innerHTML = describe(rep, step);
+    }
+    scrub.value = step;
+    stepLabel.innerHTML = `шаг <b>${step}</b> / ${STEPS}`;
+    drawPlayhead();
+  }
+  function setStep(k) { step = Math.max(0, Math.min(STEPS, k)); updateText(); }
+  function selectMap(i) {
+    mapIdx = i;
+    document.querySelectorAll(".chip").forEach((c, j) => c.setAttribute("aria-pressed", j === i ? "true" : "false"));
+    drawChart(); setStep(step);
+  }
+  function setPlaying(p) {
+    playing = p;
+    playBtn.textContent = p ? "❚❚ Пауза" : "▶ Смотреть";
+  }
+  playBtn.addEventListener("click", () => {
+    if (!playing && step >= STEPS) setStep(0);
+    setPlaying(!playing);
+  });
+  document.getElementById("back").addEventListener("click", () => { setPlaying(false); setStep(step - 1); });
+  document.getElementById("fwd").addEventListener("click", () => { setPlaying(false); setStep(step + 1); });
+  scrub.addEventListener("input", () => { setPlaying(false); setStep(+scrub.value); });
+  document.getElementById("speeds").addEventListener("click", e => {
+    const b = e.target.closest("[data-speed]"); if (!b) return;
+    speed = +b.dataset.speed;
+    document.querySelectorAll("[data-speed]").forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+  });
+  document.addEventListener("keydown", e => {
+    if (e.target.closest("input, button") && e.key === " ") return;
+    if (e.key === " ") { e.preventDefault(); playBtn.click(); }
+    else if (e.key === "ArrowLeft" && !e.target.closest("input")) { setPlaying(false); setStep(step - 1); }
+    else if (e.key === "ArrowRight" && !e.target.closest("input")) { setPlaying(false); setStep(step + 1); }
+  });
+
+  // ---------- chart ----------
+  const svg = document.getElementById("chart"), tip = document.getElementById("tip");
+  const NS = "http://www.w3.org/2000/svg";
+  let geom = null;
+  function el(name, attrs, parent) {
+    const e = document.createElementNS(NS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(e); return e;
+  }
+  function niceMax(v) {
+    const steps = [50, 100, 150, 200, 250, 300, 400, 500, 600, 800, 1000];
+    return steps.find(s => s >= v) || Math.ceil(v / 100) * 100;
+  }
+  function drawChart() {
+    const m = maps[mapIdx], W = svg.clientWidth || 600, H = 220;
+    const pad = { l: 40, r: 64, t: 12, b: 26 };
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = "";
+    const ser = { agent: [0, ...m.agent.delivered], bot: [0, ...m.bot.delivered] };
+    const ymax = niceMax(Math.max(...ser.agent, ...ser.bot, 1));
+    const x = s => pad.l + (s / STEPS) * (W - pad.l - pad.r);
+    const y = v => H - pad.b - (v / ymax) * (H - pad.t - pad.b);
+    geom = { x, y, pad, W, H, ser };
+    const grid = el("g", {});
+    for (let i = 0; i <= 4; i++) {
+      const v = (ymax / 4) * i;
+      el("line", { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: tok("--line"), "stroke-width": 1 }, grid);
+      el("text", { x: pad.l - 6, y: y(v) + 4, "text-anchor": "end" }, grid).textContent = Math.round(v);
+    }
+    for (let s = 0; s <= STEPS; s += 30) {
+      el("text", { x: x(s), y: H - 8, "text-anchor": "middle" }, grid).textContent = s === 0 ? "шаг 0" : s;
+    }
+    const ends = [];
+    for (const key of ["bot", "agent"]) {
+      const d = ser[key].map((v, s) => `${s ? "L" : "M"}${x(s).toFixed(1)},${y(v).toFixed(1)}`).join("");
+      el("path", { d, fill: "none", stroke: C[key], "stroke-width": 2, "stroke-linejoin": "round" });
+      ends.push({ key, v: ser[key][STEPS], yy: y(ser[key][STEPS]) });
+    }
+    ends.sort((a, b) => a.yy - b.yy);
+    if (ends[1].yy - ends[0].yy < 14) { const mid = (ends[0].yy + ends[1].yy) / 2; ends[0].yy = mid - 7; ends[1].yy = mid + 7; }
+    for (const e of ends) {
+      const t = el("text", { x: W - pad.r + 8, y: e.yy + 4 });
+      t.textContent = `${e.key === "agent" ? "ИИ" : "бот"} ${e.v}`;
+      t.style.fill = tok("--fg");
+    }
+    geom.head = el("line", { y1: pad.t, y2: H - pad.b, stroke: tok("--fg"), "stroke-width": 1, "stroke-dasharray": "3 3" });
+    geom.dots = ["bot", "agent"].map(key => el("circle", { r: 4, fill: C[key], stroke: tok("--panel"), "stroke-width": 2 }));
+    drawPlayhead();
+  }
+  function drawPlayhead() {
+    if (!geom) return;
+    const { x, y, ser } = geom;
+    geom.head.setAttribute("x1", x(step)); geom.head.setAttribute("x2", x(step));
+    ["bot", "agent"].forEach((key, i) => { geom.dots[i].setAttribute("cx", x(step)); geom.dots[i].setAttribute("cy", y(ser[key][step])); });
+  }
+  function stepFromEvent(e) {
+    const r = svg.getBoundingClientRect(), { pad, W } = geom;
+    const px = (e.clientX - r.left) * (W / r.width);
+    return Math.max(0, Math.min(STEPS, Math.round(((px - pad.l) / (W - pad.l - pad.r)) * STEPS)));
+  }
+  svg.addEventListener("pointermove", e => {
+    if (!geom) return;
+    const s = stepFromEvent(e), { ser } = geom, card = svg.parentElement.getBoundingClientRect();
+    tip.hidden = false;
+    tip.innerHTML = `шаг ${s}<br><span class="swatch" style="background:var(--agent)"></span>нейросеть ${ser.agent[s]}<br><span class="swatch" style="background:var(--bot)"></span>бот ${ser.bot[s]}`;
+    const left = e.clientX - card.left + 14, maxLeft = card.width - tip.offsetWidth - 8;
+    tip.style.left = Math.min(left, maxLeft) + "px";
+    tip.style.top = (e.clientY - card.top - 10) + "px";
+  });
+  svg.addEventListener("pointerleave", () => { tip.hidden = true; });
+  svg.addEventListener("click", e => { setPlaying(false); setStep(stepFromEvent(e)); });
+
+  // ---------- legend ----------
+  const keys = [
+    ["Медная руда", (g, cs) => drawTile(g, "c", 0, 0, cs, 0)],
+    ["Свинцовая руда", (g, cs) => drawTile(g, "l", 0, 0, cs, 0)],
+    ["Скала", (g, cs) => drawTile(g, "#", 0, 0, cs, 0)],
+    ["Ядро (3×3)", (g, cs) => { g.fillStyle = C.coreDeep; g.fillRect(0, 0, cs, cs); g.strokeStyle = C.core; g.lineWidth = cs * 0.14; g.strokeRect(cs * 0.22, cs * 0.22, cs * 0.56, cs * 0.56); }],
+    ["Бур (2×2)", (g, cs) => { g.fillStyle = C.drill; g.fillRect(0, 0, cs, cs); g.fillStyle = C.copper; g.fillRect(cs * 0.4, cs * 0.15, cs * 0.2, cs * 0.7); g.fillRect(cs * 0.15, cs * 0.4, cs * 0.7, cs * 0.2); }],
+    ["Конвейер с грузом", (g, cs) => drawConveyor(g, { x: 0, y: 0, r: 0 }, cs, 0.6, true)],
+  ];
+  const keysEl = document.getElementById("keys");
+  for (const [label, fn] of keys) {
+    const row = document.createElement("div"), cv = document.createElement("canvas");
+    cv.width = 44; cv.height = 44;
+    const g = cv.getContext("2d");
+    if (label.startsWith("Конвейер")) { g.save(); g.translate(0, -(S - 1) * 44); fn(g, 44); g.restore(); } else fn(g, 44);
+    row.append(cv, document.createTextNode(label));
+    keysEl.appendChild(row);
+  }
+
+  // ---------- loop ----------
+  const STEP_MS = 400;
+  let acc = 0, lastT = null;
+  function frame(t) {
+    if (lastT !== null && playing) {
+      acc += (t - lastT) * speed;
+      while (acc >= STEP_MS) {
+        acc -= STEP_MS;
+        if (step < STEPS) setStep(step + 1); else { setPlaying(false); acc = 0; break; }
+      }
+    } else acc = 0;
+    lastT = t;
+    drawBoard(boards.agent.canvas, maps[mapIdx], maps[mapIdx].agent, step, t, C.agent);
+    drawBoard(boards.bot.canvas, maps[mapIdx], maps[mapIdx].bot, step, t, C.bot);
+    requestAnimationFrame(frame);
+  }
+  let resizeTimer;
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawChart, 100); });
+
+  selectMap(0);
+  requestAnimationFrame(frame);
+})();
+</script>

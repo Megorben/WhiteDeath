@@ -72,6 +72,15 @@ tensorboard --logdir runs        # графики, по желанию
 python evaluate.py --model runs/mining/final.zip --episodes 20 --render
 ```
 
+## Просмотрщик повторов
+
+`viewer/replays.html` открывается в любом браузере, ничего устанавливать не нужно. На 20 новых картах можно пошагово смотреть, как нейросеть и скриптовый бот строят буры и конвейеры, с графиком доставки в ядро. Пересобрать его с другой моделью:
+
+```sh
+cd rl/python
+python record_replays.py --model ../models/mining.zip --out ../viewer/replays.html
+```
+
 ## Результаты
 
 Доставлено ресурсов за эпизод на 20 картах, которых не было в обучении (`evaluate.py`, сиды 10000–10019):
